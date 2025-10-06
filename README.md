@@ -17,6 +17,7 @@ no topo a direita no console, selecione em Default project "SeuApp.Data" (caso a
 cole no powershell o comando:
 
 Add-Migration Initial
+
 Update-Database
 
 (cole os dois juntos, não um por vez)
