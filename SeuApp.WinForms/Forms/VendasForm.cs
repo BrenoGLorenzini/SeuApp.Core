@@ -3,8 +3,9 @@ using System.Linq;
 using System.Windows.Forms;
 using Microsoft.EntityFrameworkCore;
 using SeuApp.Core.Entities;
-using SeuApp.Data;
+using SeuApp.Data;                 // <- DbSync.Gate
 using SeuApp.Data.Repositories;
+using SeuApp.WinForms;
 
 namespace SeuApp.WinForms.Forms;
 
@@ -14,8 +15,8 @@ public partial class VendasForm : Form
     private readonly IGenericRepository<Venda> _repoVendas;
     private readonly IGenericRepository<Produto> _repoProdutos;
 
-    // Serializa o acesso ao mesmo DbContext usado pelos repositórios
-    private readonly SemaphoreSlim _dbLock = new(1, 1);
+    // REMOVIDO: lock local — agora usamos DbSync.Gate (global)
+    // private readonly SemaphoreSlim _dbLock = new(1, 1);
 
     private List<Produto> _produtos = new();
 
@@ -29,28 +30,27 @@ public partial class VendasForm : Form
         _repoVendas = repoVendas;
         _repoProdutos = repoProdutos;
 
+        AppEvents.ProdutosAlterados += OnProdutosAlterados;
+        this.FormClosed += (_, __) => AppEvents.ProdutosAlterados -= OnProdutosAlterados;
+        this.Activated += (_, __) => OnProdutosAlterados(null, EventArgs.Empty);
+
         // Tema + estilos ao carregar
         Load += async (_, __) =>
         {
-            // Tema geral
             UiTheme.Apply(this, dark: false);
 
-            // Cabeçalho estático e grid moderno
             UiTheme.StyleGrid(dataGridView1, dark: false);
             dataGridView1.EnableHeadersVisualStyles = false;
-            // evita "azul" no cabeçalho quando a célula está em edição
             var headerBack = dataGridView1.ColumnHeadersDefaultCellStyle.BackColor;
             var headerFore = dataGridView1.ColumnHeadersDefaultCellStyle.ForeColor;
             dataGridView1.ColumnHeadersDefaultCellStyle.SelectionBackColor = headerBack;
             dataGridView1.ColumnHeadersDefaultCellStyle.SelectionForeColor = headerFore;
 
-            // Estilos de botões conforme solicitado
             UiTheme.StyleButtonPrimary(AdicionarItem);
             UiTheme.StyleButtonDanger(RemoverItem);
             UiTheme.StyleButtonSuccess(SalvarVenda);
             UiTheme.StyleButtonOutline(Voltar);
 
-            // Inputs
             UiTheme.StyleLabel(LblNome);
             UiTheme.StyleLabel(LblCpf);
             UiTheme.StyleTextBox(NomeCliente);
@@ -59,19 +59,13 @@ public partial class VendasForm : Form
             await InitGrid();
         };
 
-        // Atalhos
         KeyPreview = true;
         KeyDown += VendasForm_KeyDown;
 
-        // Trata erros de binding/combobox (evita exception visual)
         dataGridView1.DataError += (_, __) => { /* ignora visualmente */ };
     }
 
-    private void BtnVoltar_Click(object? sender, EventArgs e)
-    {
-        // Apenas fecha; MainForm já está aberto
-        Close();
-    }
+    private void BtnVoltar_Click(object? sender, EventArgs e) => Close();
 
     private void VendasForm_KeyDown(object? sender, KeyEventArgs e)
     {
@@ -82,18 +76,18 @@ public partial class VendasForm : Form
 
     private async Task InitGrid()
     {
-        await _dbLock.WaitAsync();
+        await DbSync.Gate.WaitAsync();   // << trocado (era _dbLock)
         try
         {
             _produtos = (await _repoProdutos.GetAllAsync()).ToList();
         }
         finally
         {
-            _dbLock.Release();
+            DbSync.Gate.Release();       // << trocado (era _dbLock)
         }
 
         // Grid base
-        dataGridView1.ReadOnly = false;                        // vamos controlar por coluna
+        dataGridView1.ReadOnly = false;
         dataGridView1.AllowUserToAddRows = true;
         dataGridView1.AllowUserToDeleteRows = true;
         dataGridView1.EditMode = DataGridViewEditMode.EditOnEnter;
@@ -105,35 +99,33 @@ public partial class VendasForm : Form
         dataGridView1.RowsDefaultCellStyle.SelectionBackColor = dataGridView1.DefaultCellStyle.BackColor;
         dataGridView1.RowsDefaultCellStyle.SelectionForeColor = dataGridView1.DefaultCellStyle.ForeColor;
 
-        // Impede que o "foco" desenhe o retângulo pontilhado
         dataGridView1.CellPainting += (s, e) =>
         {
             if ((e.State & DataGridViewElementStates.Selected) != 0)
             {
-                var parts = e.PaintParts & ~DataGridViewPaintParts.Focus; // remove o "focus cue"
+                var parts = e.PaintParts & ~DataGridViewPaintParts.Focus;
                 e.Paint(e.ClipBounds, parts);
                 e.Handled = true;
             }
         };
+
         dataGridView1.MultiSelect = false;
         dataGridView1.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
         dataGridView1.RowHeadersVisible = false;
 
-        // Coluna de produto (combobox) — veio do Designer
+        // Coluna de produto (combobox)
         var colProd = (DataGridViewComboBoxColumn)dataGridView1.Columns["ProdutoId"];
         colProd.DataSource = _produtos;
         colProd.DisplayMember = nameof(Produto.Descricao);
         colProd.ValueMember = nameof(Produto.Id);
         colProd.DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton;
 
-        // Somente leitura controlado: apenas Produto e Quantidade editáveis
-        foreach (DataGridViewColumn c in dataGridView1.Columns)
-            c.ReadOnly = true; // bloqueia tudo
-
-        dataGridView1.Columns["ProdutoId"].ReadOnly = false;   // libera Produto
-        dataGridView1.Columns["Quantidade"].ReadOnly = false;  // libera Qtd
-        dataGridView1.Columns["ValorUnit"].ReadOnly = true;    // travado
-        dataGridView1.Columns["TotalItem"].ReadOnly = true;    // travado
+        // Somente leitura controlado
+        foreach (DataGridViewColumn c in dataGridView1.Columns) c.ReadOnly = true;
+        dataGridView1.Columns["ProdutoId"].ReadOnly = false;
+        dataGridView1.Columns["Quantidade"].ReadOnly = false;
+        dataGridView1.Columns["ValorUnit"].ReadOnly = true;
+        dataGridView1.Columns["TotalItem"].ReadOnly = true;
 
         // Alinhamentos e formatos
         dataGridView1.Columns["Quantidade"].DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
@@ -158,21 +150,38 @@ public partial class VendasForm : Form
         dataGridView1.RowsRemoved += DataGridView1_RowsChanged;
         dataGridView1.EditingControlShowing += DataGridView1_EditingControlShowing;
 
-        // Entrada
         CPFCliente.Mask = "000.000.000-00";
         Total.Text = 0m.ToString("C");
     }
 
+    private async void OnProdutosAlterados(object? sender, EventArgs e)
+    {
+        await DbSync.Gate.WaitAsync();   // << trocado (era _dbLock)
+        try
+        {
+            _produtos = (await _repoProdutos.GetAllAsync()).ToList();
+        }
+        finally
+        {
+            DbSync.Gate.Release();       // << trocado (era _dbLock)
+        }
+
+        var colProd = (DataGridViewComboBoxColumn)dataGridView1.Columns["ProdutoId"];
+        colProd.DataSource = null;
+        colProd.DataSource = _produtos;
+        colProd.DisplayMember = nameof(Produto.Descricao);
+        colProd.ValueMember = nameof(Produto.Id);
+        colProd.DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton;
+    }
+
     private void DataGridView1_CurrentCellDirtyStateChanged(object? sender, EventArgs e)
     {
-        // Garante CellValueChanged ao trocar o combo
         if (dataGridView1.IsCurrentCellDirty)
             dataGridView1.CommitEdit(DataGridViewDataErrorContexts.Commit);
     }
 
     private void DataGridView1_EditingControlShowing(object? sender, DataGridViewEditingControlShowingEventArgs e)
     {
-        // Recalcula ao sair do editor
         e.Control.Leave -= Editor_Leave;
         e.Control.Leave += Editor_Leave;
     }
@@ -187,7 +196,6 @@ public partial class VendasForm : Form
         var row = dataGridView1.Rows[e.RowIndex];
         if (row.IsNewRow) return;
 
-        // Ao escolher Produto → carrega Valor do produto
         if (dataGridView1.Columns[e.ColumnIndex].Name == "ProdutoId")
         {
             var val = row.Cells["ProdutoId"].Value;
@@ -197,15 +205,12 @@ public partial class VendasForm : Form
                 if (prod != null)
                 {
                     row.Cells["ValorUnit"].Value = prod.Valor;
-
-                    // Se quantidade não definida, usa 1
                     if (!TryGetDecimal(row.Cells["Quantidade"].Value, out var qtd) || qtd <= 0)
                         row.Cells["Quantidade"].Value = 1m;
                 }
             }
         }
 
-        // Se quantidade alterada, valida mínimo 1
         if (dataGridView1.Columns[e.ColumnIndex].Name == "Quantidade")
         {
             if (!TryGetDecimal(row.Cells["Quantidade"].Value, out var qtd) || qtd <= 0)
@@ -263,7 +268,7 @@ public partial class VendasForm : Form
 
             var raw = row.Cells["ProdutoId"].Value;
             if (raw == null || !int.TryParse(Convert.ToString(raw), out var pid) || pid <= 0 || !validIds.Contains(pid))
-                linhasInvalidas.Add(i + 1); // 1-based p/ usuário
+                linhasInvalidas.Add(i + 1);
         }
 
         if (linhasInvalidas.Count > 0)
@@ -275,12 +280,8 @@ public partial class VendasForm : Form
             return;
         }
 
-        var idsValidosDb = (await _ctx.Produtos
-    .AsNoTracking()
-    .Select(p => p.Id)
-    .ToListAsync())
-    .ToHashSet();
-
+        var idsValidosDb = (await _ctx.Produtos.AsNoTracking()
+            .Select(p => p.Id).ToListAsync()).ToHashSet();
 
         var venda = new Venda
         {
@@ -293,18 +294,14 @@ public partial class VendasForm : Form
         {
             if (row.IsNewRow) continue;
 
-            // ProdutoId precisa existir e ser int válido presente no banco
             var rawId = row.Cells["ProdutoId"].Value;
             if (rawId == null || !int.TryParse(Convert.ToString(rawId), out var produtoId)) continue;
             if (!idsValidosDb.Contains(produtoId)) continue;
 
-            // Quantidade e Valor
             var qtd = TryGetDecimal(row.Cells["Quantidade"].Value);
             var vlr = TryGetDecimal(row.Cells["ValorUnit"].Value);
-
             if (qtd <= 0 || vlr <= 0) continue;
 
-            // Busca descrição só para exibir/armazenar (opcional)
             var prodDesc = _produtos.FirstOrDefault(p => p.Id == produtoId)?.Descricao ?? "";
 
             venda.Itens.Add(new VendaItem
@@ -316,9 +313,7 @@ public partial class VendasForm : Form
             });
         }
 
-        venda.Itens = venda.Itens
-    .Where(i => idsValidosDb.Contains(i.ProdutoId))
-    .ToList();
+        venda.Itens = venda.Itens.Where(i => idsValidosDb.Contains(i.ProdutoId)).ToList();
 
         if (venda.Itens.Count == 0)
         {
@@ -326,15 +321,9 @@ public partial class VendasForm : Form
             return;
         }
 
-        if (venda.Itens.Count == 0)
-        {
-            MessageBox.Show("Inclua ao menos um item válido.");
-            return;
-        }
-
         venda.Total = venda.Itens.Sum(i => i.Quantidade * i.ValorUnit);
 
-        await _dbLock.WaitAsync();
+        await DbSync.Gate.WaitAsync();   // << trocado (era _dbLock)
         try
         {
             await _repoVendas.AddAsync(venda);
@@ -342,7 +331,7 @@ public partial class VendasForm : Form
         }
         finally
         {
-            _dbLock.Release();
+            DbSync.Gate.Release();       // << trocado (era _dbLock)
         }
 
         MessageBox.Show("Venda salva!");
@@ -363,7 +352,7 @@ public partial class VendasForm : Form
         var idx = dataGridView1.Rows.Add();
         var row = dataGridView1.Rows[idx];
         row.Cells["Quantidade"].Value = 1m;
-        row.Cells["ValorUnit"].Value = 0m; // será preenchido ao escolher o produto
+        row.Cells["ValorUnit"].Value = 0m;
         dataGridView1.CurrentCell = row.Cells["ProdutoId"];
         dataGridView1.BeginEdit(true);
     }
@@ -377,7 +366,6 @@ public partial class VendasForm : Form
         }
 
         var row = dataGridView1.CurrentRow;
-        // Foca na primeira coluna editável disponível
         DataGridViewCell cell = row.Cells["ProdutoId"];
         if (cell.ReadOnly) cell = row.Cells["Quantidade"];
         dataGridView1.CurrentCell = cell;
@@ -387,16 +375,9 @@ public partial class VendasForm : Form
     // Mapeamento dos botões do Designer (mantidos)
     private void AdicionarItem_Click(object? sender, EventArgs e) => BtnAdicionarItem_Click(sender, e);
     private void RemoverItem_Click(object? sender, EventArgs e) => BtnRemoverItem_Click(sender, e);
-    private void ExcluirItem_Click(object? sender, EventArgs e) => BtnRemoverItem_Click(sender, e); // Está invisível no Designer
+    private void ExcluirItem_Click(object? sender, EventArgs e) => BtnRemoverItem_Click(sender, e);
     private void SalvarVenda_Click(object? sender, EventArgs e) => BtnSalvarVenda_Click(sender, e);
 
-    private void LblCpf_Click(object sender, EventArgs e)
-    {
-
-    }
-
-    private void LblNome_Click(object sender, EventArgs e)
-    {
-
-    }
+    private void LblCpf_Click(object sender, EventArgs e) { }
+    private void LblNome_Click(object sender, EventArgs e) { }
 }

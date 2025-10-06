@@ -3,15 +3,16 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using SeuApp.Core.Entities;
+using SeuApp.Data;                // <- DbSync.Gate
 using SeuApp.Data.Repositories;
 
 namespace SeuApp.WinForms.Forms;
 
 public partial class ProdutosForm : Form
 {
-    // Serializa chamadas ao EF neste form (evita acesso concorrente ao mesmo DbContext)
-    private readonly SemaphoreSlim _dbLock = new(1, 1);
-   
+    // REMOVIDO: lock local — agora usamos DbSync.Gate (global)
+    // private readonly SemaphoreSlim _dbLock = new(1, 1);
+
     private readonly IGenericRepository<Produto> _repo;
     private int? _editId = null;
 
@@ -127,7 +128,7 @@ public partial class ProdutosForm : Form
     // --------- DATA ----------
     private async Task CarregarGrid()
     {
-        await _dbLock.WaitAsync();
+        await DbSync.Gate.WaitAsync();  // << trocado (era _dbLock)
         try
         {
             var lista = await _repo.GetAllAsync();
@@ -224,13 +225,12 @@ public partial class ProdutosForm : Form
                 }
             };
 
-            // Hover: efeito visual ao passar o mouse
+            // Hover
             dataGridView1.CellMouseEnter += (s, e) =>
             {
                 if (e.RowIndex >= 0)
                     dataGridView1.Rows[e.RowIndex].DefaultCellStyle.BackColor = Color.FromArgb(245, 245, 245);
             };
-
             dataGridView1.CellMouseLeave += (s, e) =>
             {
                 if (e.RowIndex >= 0)
@@ -239,18 +239,16 @@ public partial class ProdutosForm : Form
                         : Color.FromArgb(245, 245, 245);
             };
 
-
-
             dataGridView1.DataSource = lista
                 .Select(p => new { p.Id, p.Descricao, p.Valor, p.Quantidade, p.Observacao })
                 .ToList();
 
             dataGridView1.ClearSelection();
-            EnableAllIdle(); // garante botões/inputs no estado correto após carregar
+            EnableAllIdle();
         }
         finally
         {
-            _dbLock.Release();
+            DbSync.Gate.Release();        // << trocado (era _dbLock)
         }
     }
 
@@ -271,7 +269,7 @@ public partial class ProdutosForm : Form
         Quantidade.Value = 0;
         _editId = null;
         Salvar.Text = "Salvar (Ctrl+S)";
-        SetEditMode(false);     // <--- deshabilita digitação
+        SetEditMode(false);
     }
 
     // Habilita/Desabilita os campos de edição e o botão Salvar
@@ -294,15 +292,14 @@ public partial class ProdutosForm : Form
     private void BtnNovo_Click(object? sender, EventArgs e)
     {
         Limpar();
-        BeginEditMode(); // habilita campos e só Salvar
+        BeginEditMode();
         dataGridView1.ClearSelection();
     }
 
     private async void BtnSalvar_Click(object? sender, System.EventArgs e)
     {
-        if (!_isEditing) return; // evita clique fora do modo de edição
+        if (!_isEditing) return;
 
-        // trava o botão salvar para evitar duplo-clique durante o await
         Salvar.Enabled = false;
 
         try
@@ -352,6 +349,9 @@ public partial class ProdutosForm : Form
                 MessageBox.Show("Produto salvo!");
             }
 
+            // Notifica Vendas (FORA de lock)
+            AppEvents.RaiseProdutosAlterados();
+
             await CarregarGrid();
             Limpar();
         }
@@ -361,7 +361,6 @@ public partial class ProdutosForm : Form
         }
         finally
         {
-            // SEMPRE voltar ao estado “parado”
             EnableAllIdle();
         }
     }
@@ -370,10 +369,8 @@ public partial class ProdutosForm : Form
     {
         if (!Excluir.Enabled) return;
 
-        // desabilita ações durante o fluxo
         Excluir.Enabled = Novo.Enabled = Salvar.Enabled = Editar.Enabled = false;
 
-        // 1) validações rápidas SEM lock
         if (dataGridView1.CurrentRow == null)
         {
             MessageBox.Show("Selecione um produto.");
@@ -390,8 +387,8 @@ public partial class ProdutosForm : Form
 
         var id = Convert.ToInt32(dataGridView1.CurrentRow.Cells["Id"].Value);
 
-        // 2) executa a exclusão COM lock
-        await _dbLock.WaitAsync();
+        // Exclusão COM lock global
+        await DbSync.Gate.WaitAsync();   // << trocado (era _dbLock)
         try
         {
             var entidade = await _repo.GetByIdAsync(id);
@@ -403,13 +400,16 @@ public partial class ProdutosForm : Form
         }
         finally
         {
-            _dbLock.Release();
+            DbSync.Gate.Release();       // << trocado (era _dbLock)
         }
 
-        // 3) atualiza a UI FORA do lock (evita deadlock)
-        await CarregarGrid();   // recarrega a fonte de dados e redesenha
-        Limpar();               // limpa campos / volta texto do botão
-        EnableAllIdle();        // reabilita todos os botões no estado "parado"
+        // Notifica Vendas (FORA do lock)
+        AppEvents.RaiseProdutosAlterados();
+
+        // Atualiza UI
+        await CarregarGrid();
+        Limpar();
+        EnableAllIdle();
     }
 
     private void BtnAtualizar_Click(object? sender, EventArgs e)
@@ -437,13 +437,9 @@ public partial class ProdutosForm : Form
 
         Salvar.Text = "Atualizar (Ctrl+S)";
 
-        // ✅ entre em modo de edição (habilita campos, habilita Salvar e desabilita Novo/Editar/Excluir/Voltar)
-        BeginEditMode();  // <-- use este (ou SetEditing(true) se preferir)
-
+        BeginEditMode();
         Descrição.Focus();
     }
-
-
 
     // compat Designer
     private void TextBox1_TextChanged(object? sender, System.EventArgs e) { }
