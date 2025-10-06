@@ -14,13 +14,11 @@ clique com o botão direito no Projeto "SeuApp.Data" e defina como projeto de in
 clique em ferramentas bem ao topo da IDE, vá com o mouse para gerenciador de pacotes NuGet e clique em "Console do Gerenciador de Pacotes".
 no topo a direita no console, selecione em Default project "SeuApp.Data" (caso a seleção não esteja em SeuApp.Data).
 
-cole no powershell o comando:
+cole no powershell os comandos:
 
 Add-Migration Initial
 
 Update-Database
-
-(cole os dois juntos, não um por vez)
 
 clique enter, note que irá criar um arquivo automatico dentro da pasta Migrations.
 abra o banco de dados e verifique se foi criado as tabelas do database.
