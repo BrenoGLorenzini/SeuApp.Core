@@ -18,6 +18,7 @@ cole no powershell o comando:
 
 Add-Migration Initial
 Update-Database
+
 (cole os dois juntos, não um por vez)
 
 clique enter, note que irá criar um arquivo automatico dentro da pasta Migrations.
