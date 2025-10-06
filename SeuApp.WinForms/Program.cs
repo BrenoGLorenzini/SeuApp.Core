@@ -34,7 +34,7 @@ internal static class Program
             {
                 // Connection String
                 var cs = ctx.Configuration.GetConnectionString("Default")
-                         ?? "server=127.0.0.1;port=3306;database=SeuAppDb;user=root;password=1010110101#;TreatTinyAsBoolean=false";
+                         ?? "server=127.0.0.1;port=3306;database=SeuAppDb;user=root;password=suasenha;TreatTinyAsBoolean=false";
 
                 // DbContext com Pomelo (MariaDB)
                 services.AddDbContext<AppDbContext>(opt =>

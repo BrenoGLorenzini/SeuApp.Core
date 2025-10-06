@@ -12,7 +12,7 @@ namespace SeuApp.Data
             var cs = Environment.GetEnvironmentVariable("SEUAPP_CS");
 
             // 2) Fallback: use a MESMA string dos appsettings (root)
-            cs ??= "server=127.0.0.1;port=3306;database=SeuAppDb;user=root;password=1010110101#;TreatTinyAsBoolean=false";
+            cs ??= "server=127.0.0.1;port=3306;database=SeuAppDb;user=root;password=suasenha;TreatTinyAsBoolean=false";
 
             var serverVersion = ServerVersion.AutoDetect(cs);
             var opt = new DbContextOptionsBuilder<AppDbContext>()
